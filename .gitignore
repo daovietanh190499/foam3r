@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+
+# All experiment data and results (scene, renders, metrics, figures)
+data/
+
+# CUDA extension build (rebuild: bash voronoi_render_cuda/build.sh)
+voronoi_render_cuda/build/
+
+# LaTeX build artifacts (sources in report_latex/ are tracked)
+report_latex/*.aux
+report_latex/*.log
+report_latex/*.out
+report_latex/*.toc
+report_latex/*.fls
+report_latex/*.fdb_latexmk
+report_latex/*.synctex.gz
+report_latex/*.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

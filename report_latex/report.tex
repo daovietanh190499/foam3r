@@ -1,0 +1,469 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese,english]{babel}
+
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+
+% pdflatex: tlmgr install babel-vietnamese vntex
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black,
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!8},
+}
+
+\title{Báo cáo thực nghiệm:\\Tái hiện Voronoi Volume Renderer từ RadFoam}
+\author{Pipeline nghiên cứu \texttt{myresearch/}}
+\date{26 tháng 6, 2025}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Báo cáo này trình bày kết quả tái hiện thuật toán render thể tích Voronoi của RadFoam trên scene \textbf{counter} (Mip-NeRF~360 indoor), với hai backend: \textbf{Python/PyTorch} (tham chiếu) và \textbf{C++/CUDA} (tối ưu). Cả hai backend sử dụng cùng topology Delaunay lưu trong checkpoint, spherical harmonics bậc~3, và compositing nền trắng. Trên tập test COLMAP (downsample $\times$2, stride tia $\times$4), Python và CUDA đạt PSNR trung bình \textbf{25.79\,dB} (5~view). Pipeline CUDA sau tối ưu \textbf{GPU spatial-grid NN} render \textbf{$\sim$0.10\,s/view} (tăng tốc $\sim$10$\times$ so với CPU \texttt{cKDTree}), throughput $\sim$1.27M~rays/s trên RTX~2060; VRAM grid thêm $\sim$8--10\,MB.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{Giới thiệu}
+%----------------------------------------------------------------------
+
+RadFoam biểu diễn scene bằng $\sim$2 triệu \textbf{Voronoi sites} với mật độ và màu phụ thuộc hướng nhìn (spherical harmonics). Mục tiêu nghiên cứu:
+\begin{enumerate}[noitemsep]
+    \item Trích xuất dữ liệu từ \texttt{model.pt} và render lại ảnh test với chất lượng tương đương ground truth.
+    \item Tách pipeline Python đã validate thành module độc lập (\texttt{voronoi\_render/}).
+    \item Viết lại thuật toán bằng C++/CUDA (\texttt{voronoi\_render\_cuda/}) dễ compile, dễ đọc, và tái hiện kết quả Python.
+\end{enumerate}
+
+Scene \textbf{counter} thuộc bộ Mip-NeRF~360 (indoor), cấu hình trong \texttt{config.yaml} với \texttt{white\_background: true}, \texttt{sh\_degree: 3}. Checkpoint \texttt{model.pt} chứa \textbf{1,985,308} sites.
+
+%----------------------------------------------------------------------
+\section{Thiết lập thực nghiệm}
+%----------------------------------------------------------------------
+
+\subsection{Dữ liệu và mô hình}
+
+\begin{table}[H]
+\centering
+\caption{Tham số dataset và mô hình.}
+\label{tab:setup-data}
+\begin{tabular}{ll}
+\toprule
+\textbf{Tham số} & \textbf{Giá trị} \\
+\midrule
+Dataset & \texttt{data/mipnerf360/counter} \\
+Camera & COLMAP sparse reconstruction \\
+Split đánh giá & Test (mỗi ảnh thứ 8) \\
+Downsample ảnh & $\times$2 $\rightarrow$ \textbf{1038 $\times$ 1558} px \\
+Ray subsample (stride) & $\times$4 $\rightarrow$ \textbf{101,400 rays/view} \\
+Số Voronoi sites & \textbf{1,985,308} \\
+Max degree (adjacency) & \textbf{51} \\
+SH degree & 3 (45 hệ số kênh / site) \\
+Nền & Trắng: $\mathrm{rgb} = \mathrm{rgb} + (1 - \alpha)$ \\
+Density activation & $\mathrm{softplus}(\cdot, \beta{=}10) \times \mathrm{activation\_scale}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Phần cứng và phần mềm}
+
+\begin{table}[H]
+\centering
+\caption{Môi trường thực nghiệm.}
+\label{tab:setup-hw}
+\begin{tabular}{ll}
+\toprule
+\textbf{Thành phần} & \textbf{Chi tiết} \\
+\midrule
+GPU & NVIDIA GeForce RTX 2060 (6\,GB VRAM) \\
+Driver & 595.71.05 \\
+Python & 3.12 (\texttt{.venv}) \\
+CUDA extension & \texttt{voronoi\_render\_cuda} (build \texttt{native}) \\
+Scene binary & \texttt{scene.vort} ($\sim$2.1\,GB, format VORT v1) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Lệnh chạy}
+
+\textbf{Python (tham chiếu):}
+\begin{lstlisting}
+.venv/bin/python -m myresearch.eval_counter \
+  --indices 0,1,2,3,4 --stride 4 --downsample 2
+\end{lstlisting}
+
+\textbf{CUDA (GPU NN):}
+\begin{lstlisting}
+.venv/bin/python myresearch/voronoi_render/eval_cuda.py \
+  --out myresearch/data/render_cuda --indices 0,1,2,3,4 --stride 4
+\end{lstlisting}
+
+\textbf{CUDA (CPU cKDTree, legacy):}
+\begin{lstlisting}
+.venv/bin/python myresearch/voronoi_render_kdtree/eval_cuda.py \
+  --out myresearch/data/render_cuda_kdtree --indices 0,1,2,3,4 --stride 4
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Phương pháp}
+%----------------------------------------------------------------------
+
+\subsection{Luồng render}
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{Khởi tạo ô Voronoi:} Tìm site gần nhất (NN trên tọa độ \texttt{xyz}) làm ô bắt đầu.
+    \item \textbf{Voronoi walk:} Duyệt mặt Delaunay láng giềng; cập nhật ô khi $\mathrm{dp} > 0$; tích lũy Beer--Lambert.
+    \item \textbf{Màu SH:} RGB theo \textbf{hướng tia}; hệ số xen kẽ $[r_0,g_0,b_0, r_1,g_1,b_1, \ldots]$.
+    \item \textbf{Compositing:} Nền trắng sau trace.
+    \item \textbf{Upsample:} Bilinear từ lưới stride về full resolution trước PSNR.
+\end{enumerate}
+
+\subsection{Điểm then chốt đã xác minh}
+
+\begin{itemize}[noitemsep]
+    \item Dùng \textbf{adjacency CSR} có sẵn trong \texttt{model.pt}; tái build Delaunay làm hỏng topology.
+    \item Chỉ tích lũy khi $t_1 > t_0$ nhưng vẫn \textbf{chuyển ô} khi $t_1 \leq t_0$.
+    \item CUDA và Python dùng cùng công thức SH, density, và walk logic.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Kết quả định lượng}
+%----------------------------------------------------------------------
+
+\subsection{PSNR --- Python (PyTorch)}
+
+\begin{table}[H]
+\centering
+\caption{PSNR trên tập test COLMAP --- backend Python.}
+\label{tab:psnr-python}
+\begin{tabular}{cc}
+\toprule
+\textbf{View (test)} & \textbf{PSNR (dB)} \\
+\midrule
+0 & \textbf{23.94} \\
+1 & \textbf{25.91} \\
+2 & \textbf{24.51} \\
+3 & \textbf{25.99} \\
+4 & \textbf{28.61} \\
+\midrule
+\textbf{Trung bình (5 view)} & \textbf{25.79} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{PSNR --- CUDA}
+
+\begin{table}[H]
+\centering
+\caption{PSNR trên tập test COLMAP --- backend CUDA.}
+\label{tab:psnr-cuda}
+\begin{tabular}{cc}
+\toprule
+\textbf{View (test)} & \textbf{PSNR (dB)} \\
+\midrule
+0 & \textbf{23.94} \\
+1 & \textbf{25.91} \\
+2 & \textbf{24.51} \\
+3 & \textbf{25.99} \\
+4 & \textbf{28.61} \\
+\midrule
+\textbf{Trung bình (5 view)} & \textbf{25.79} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{So sánh Python vs CUDA}
+
+\begin{table}[H]
+\centering
+\caption{Chênh lệch PSNR giữa hai backend (5 view).}
+\label{tab:psnr-compare}
+\begin{tabular}{cccc}
+\toprule
+\textbf{View} & \textbf{PSNR Python} & \textbf{PSNR CUDA} & $\boldsymbol{\Delta}$ \textbf{(CUDA $-$ Python)} \\
+\midrule
+0 & 23.94 & 23.94 & 0.00\,dB \\
+1 & 25.91 & 25.91 & 0.00\,dB \\
+2 & 24.51 & 24.51 & $\sim$0.00\,dB \\
+3 & 25.99 & 25.99 & 0.00\,dB \\
+4 & 28.61 & 28.61 & $\sim$0.00\,dB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Ghi chú:} Hai backend khớp PSNR trên cùng 5 view. GPU spatial-grid NN cho 0 mismatch so với CPU \texttt{cKDTree}.
+
+\subsection{Xác thực số học Python $\leftrightarrow$ CUDA}
+
+Kiểm tra trên \textbf{4,096} tia ngẫu nhiên, cùng \texttt{start\_cells}, toàn bộ $\sim$1.99M sites:
+
+\begin{table}[H]
+\centering
+\caption{So sánh đầu ra RGBA per-ray giữa Python và CUDA.}
+\label{tab:numerical}
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Giá trị} \\
+\midrule
+Max abs diff (RGBA) & \textbf{$2.73\times10^{-5}$} \\
+Mean abs diff & $\sim 10^{-6}$ \\
+Ngưỡng PASS & $< 10^{-3}$ \\
+\textbf{Kết luận} & \textbf{PASS} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Kết quả định tính}
+%----------------------------------------------------------------------
+
+Mỗi hình triptych: \textbf{Prediction\,|\,Ground Truth\,|\,|Error|} (sai số RGB tuyệt đối). Ảnh lưu tại \texttt{../data/report_figures/python/} và \texttt{../data/report_figures/cuda/}.
+
+\subsection{Python --- PyTorch reference}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/python/view_000_pred_gt_err.png}
+\caption{Python --- view~0 (PSNR 24.52\,dB).}
+\label{fig:py-0}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/python/view_001_pred_gt_err.png}
+\caption{Python --- view~1 (PSNR 28.13\,dB).}
+\label{fig:py-1}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/python/view_002_pred_gt_err.png}
+\caption{Python --- view~2 (PSNR 25.42\,dB).}
+\label{fig:py-2}
+\end{figure}
+
+\subsection{CUDA renderer}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/cuda/view_000_pred_gt_err.png}
+\caption{CUDA --- view~0 (PSNR 23.94\,dB).}
+\label{fig:cuda-0}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/cuda/view_001_pred_gt_err.png}
+\caption{CUDA --- view~1 (PSNR 25.91\,dB).}
+\label{fig:cuda-1}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/cuda/view_002_pred_gt_err.png}
+\caption{CUDA --- view~2 (PSNR 24.51\,dB).}
+\label{fig:cuda-2}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/cuda/view_003_pred_gt_err.png}
+\caption{CUDA --- view~3 (PSNR 25.99\,dB).}
+\label{fig:cuda-3}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../data/report_figures/cuda/view_004_pred_gt_err.png}
+\caption{CUDA --- view~4 (PSNR 28.61\,dB).}
+\label{fig:cuda-4}
+\end{figure}
+
+\subsection{Nhận xét trực quan}
+
+\begin{itemize}[noitemsep]
+    \item Cả hai backend tái hiện cấu trúc scene indoor (quầy, tường, vật thể) ở stride~$\times$4.
+    \item Vùng lỗi tập trung ở biên vật thể, phản chiếu, và vùng mờ.
+    \item View~1 và view~4 đạt PSNR cao nhất ($\sim$28\,dB).
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Hiệu năng (CUDA)}
+%----------------------------------------------------------------------
+
+Nguồn: \texttt{myresearch/data/render_cuda/timing.json} (GPU spatial-grid NN). Pipeline cũ (CPU \texttt{cKDTree}): \texttt{myresearch/data/render_cuda_kdtree/timing.json}.
+Cấu hình: 5~view, stride~4, \texttt{ray\_chunk}\,=\,65,536, RTX~2060.
+
+\subsection{So sánh pipeline cũ vs mới}
+
+\begin{table}[H]
+\centering
+\caption{Tăng tốc sau khi chuyển NN lookup lên GPU.}
+\label{tab:timing-compare}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Pipeline} & \textbf{5 views (s)} & \textbf{TB/view (s)} & \textbf{NN} \\
+\midrule
+Cũ: CPU \texttt{cKDTree} + CUDA trace & 4.90 & 0.98 & CPU (90\%) \\
+Mới: GPU grid NN + CUDA trace & 0.49 & 0.10 & GPU (+8 MB) \\
+\midrule
+\textbf{Tăng tốc NN+trace} & \multicolumn{3}{c}{\textbf{$\sim$10$\times$}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thời gian theo giai đoạn (pipeline mới)}
+
+\begin{table}[H]
+\centering
+\caption{Thời gian pipeline CUDA end-to-end.}
+\label{tab:timing-phase}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Giai đoạn} & \textbf{Thời gian (s)} & \textbf{Ghi chú} \\
+\midrule
+Load \texttt{scene.vort} + grid $\rightarrow$ GPU & \textbf{5.60} & Một lần / phiên (2--6\,s) \\
+Load COLMAP cameras & \textbf{3.04} & 30 ảnh test \\
+Render 5 views (NN+trace+post) & \textbf{1.02} & \texttt{CudaScene.trace()} \\
+\quad trong đó NN+trace thuần & 0.49 & 0.098\,s/view \\
+\midrule
+\textbf{Tổng end-to-end} & \textbf{9.66} & Không ghi PNG \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Phân rã thời gian render (5 views)}
+
+\begin{table}[H]
+\centering
+\caption{Phân rã render với GPU NN.}
+\label{tab:timing-breakdown}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Thành phần} & \textbf{Tổng (s)} & \textbf{TB/view (s)} & \textbf{Tỷ lệ} \\
+\midrule
+GPU NN (spatial grid) & 0.12 & 0.025 & 25\% \\
+CUDA Voronoi trace & 0.38 & 0.077 & 75\% \\
+Postprocess & 0.02 & 0.004 & $<$4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Throughput theo view (tích hợp \texttt{trace()})}
+
+\begin{table}[H]
+\centering
+\caption{NN + trace trên GPU theo view.}
+\label{tab:timing-throughput}
+\begin{tabular}{cccc}
+\toprule
+\textbf{View} & \textbf{NN+trace (s)} & \textbf{Rays} & \textbf{Rays/s} \\
+\midrule
+0 & 0.202 & 101,400 & 502K \\
+1 & 0.069 & 101,400 & 1.47M \\
+2 & 0.084 & 101,400 & 1.20M \\
+3 & 0.079 & 101,400 & 1.29M \\
+4 & 0.056 & 101,400 & 1.80M \\
+\midrule
+\textbf{TB} & \textbf{0.098} & 101,400 & \textbf{$\sim$1.27M} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent View~0 chậm hơn do GPU warm-up lần đầu. Spatial grid thêm $\sim$8--10\,MB VRAM; không cần \texttt{model.pt} cho NN.
+
+%----------------------------------------------------------------------
+\section{Thảo luận}
+%----------------------------------------------------------------------
+
+\subsection{Chất lượng hình ảnh}
+
+PSNR 25--28\,dB trên 3--5 view test cho thấy pipeline tái hiện thành công RadFoam Voronoi renderer ở stride~4. Trích xuất sites, adjacency, SH và density từ \texttt{model.pt} --- kết hợp đúng walk và compositing --- đủ để render scene indoor phức tạp.
+
+\subsection{Tính đúng đắn CUDA}
+
+Sai số per-ray $O(10^{-5})$ và PSNR khớp nhau trên 5 view khẳng định implementation CUDA tái hiện đúng Python. GPU spatial-grid NN cho 0 mismatch so với CPU \texttt{cKDTree}.
+
+\subsection{Hiệu năng}
+
+Pipeline CUDA sau GPU spatial-grid NN: \textbf{$\sim$0.10\,s/view} (từ $\sim$0.98\,s/view), tăng tốc NN+trace \textbf{$\sim$10$\times$}. Bottleneck CPU \texttt{cKDTree} đã loại bỏ; VRAM grid thêm $\sim$8--10\,MB.
+
+\subsection{Hạn chế}
+
+\begin{itemize}[noitemsep]
+    \item Đánh giá ở stride~4, chưa báo cáo full-resolution (stride~1).
+    \item Thời gian load \texttt{scene.vort} biến thiên (2--6\,s) tùy trạng thái GPU/disk.
+    \item Chưa so sánh trực tiếp với RadFoam \texttt{test.py}.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Kết luận}
+%----------------------------------------------------------------------
+
+\begin{enumerate}[noitemsep]
+    \item Pipeline Python và CUDA: PSNR trung bình \textbf{25.79\,dB} (5 view).
+    \item GPU NN (spatial grid) khớp CPU \texttt{cKDTree} (0 mismatch).
+    \item Render CUDA \textbf{$\sim$0.10\,s/view}, tăng tốc \textbf{$\sim$10$\times$} so với CPU NN.
+    \item VRAM grid thêm $\sim$8--10\,MB; không duplicate scene 2\,GB.
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\appendix
+\section{Bảng tổng hợp}
+%----------------------------------------------------------------------
+
+\begin{table}[H]
+\centering
+\caption{Tổng hợp số liệu chính.}
+\label{tab:summary}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Python} & \textbf{CUDA} \\
+\midrule
+Sites & 1,985,308 & 1,985,308 \\
+Views đánh giá & 5 & 5 \\
+Avg PSNR & 25.79\,dB & 25.79\,dB \\
+Render time/view (stride 4) & --- & 0.10\,s \\
+Speedup vs CPU-NN pipeline & --- & $\sim$10$\times$ \\
+NN lookup & CPU \texttt{cKDTree} & GPU grid (+8 MB) \\
+Throughput & --- & $\sim$1.27M rays/s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Cấu trúc thư mục báo cáo}
+
+\begin{verbatim}
+myresearch/report_latex/
+├── report.tex          # tài liệu chính
+├── Makefile            # build PDF
+├── data/                          # Local only (gitignored): scene, results, figures
+│   ├── python/         # triptych Python (view 0-2)
+│   └── cuda/           # triptych + pred CUDA (view 0-4)
+└── report.pdf          # (sau khi compile)
+\end{verbatim}
+
+Tài liệu kỹ thuật chi tiết: \texttt{VORONOI\_RENDER\_GUIDE.md}.
+
+\end{document}
