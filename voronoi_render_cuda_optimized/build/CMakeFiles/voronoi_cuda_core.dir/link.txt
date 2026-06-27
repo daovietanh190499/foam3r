@@ -1,2 +1,0 @@
-/usr/bin/ar qc libvoronoi_cuda_core.a CMakeFiles/voronoi_cuda_core.dir/src/scene.cpp.o CMakeFiles/voronoi_cuda_core.dir/src/adjacency.cu.o CMakeFiles/voronoi_cuda_core.dir/src/trace_fused.cu.o
-/usr/bin/ranlib libvoronoi_cuda_core.a

@@ -11,6 +11,7 @@ data/
 
 # CUDA extension build
 voronoi_render_cuda/build/
+voronoi_render_cuda_optimized/build/
 voronoi/build/
 
 # LaTeX build artifacts (sources in report_latex/ are tracked)
