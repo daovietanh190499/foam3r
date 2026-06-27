@@ -1,0 +1,4 @@
+/mnt/data/foam3r/myresearch/voronoi_render_cuda_optimized/build/CMakeFiles/voronoi_cuda_core.dir
+/mnt/data/foam3r/myresearch/voronoi_render_cuda_optimized/build/CMakeFiles/voronoi_cuda.dir
+/mnt/data/foam3r/myresearch/voronoi_render_cuda_optimized/build/CMakeFiles/edit_cache.dir
+/mnt/data/foam3r/myresearch/voronoi_render_cuda_optimized/build/CMakeFiles/rebuild_cache.dir

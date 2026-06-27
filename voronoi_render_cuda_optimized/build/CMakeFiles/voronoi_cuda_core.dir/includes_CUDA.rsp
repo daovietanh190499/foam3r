@@ -1,0 +1,1 @@
+-I/mnt/data/foam3r/myresearch/voronoi_render_cuda_optimized/include -isystem "/usr/local/cuda/targets/x86_64-linux/include"

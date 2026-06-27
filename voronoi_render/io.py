@@ -14,6 +14,7 @@ from .sh import pack_sh_attributes, sh_degree_from_num_coeffs
 
 VORT_MAGIC = 0x54524F56  # "VORT" little-endian
 VORT_VERSION = 1
+VORT_VERSION_CSR = 2
 
 
 def _activate_density(raw: torch.Tensor, activation_scale: float = 1.0) -> torch.Tensor:
@@ -146,5 +147,57 @@ def export_scene_bin(
         f.write(nbr_idx.numpy().astype(np.int32).tobytes())
         f.write(nbr_diff.numpy().astype(np.float32).tobytes())
         f.write(nbr_valid.numpy().astype(np.uint8).tobytes())
+
+    return out_path
+
+
+def export_scene_bin_csr(
+    scene: dict,
+    out_path: str | Path,
+    *,
+    max_steps: int = 128,
+    weight_threshold: float = 0.001,
+) -> Path:
+    """
+    Export Voronoi scene with sparse CSR adjacency (VORT v2, RadFoam-style).
+
+    Layout: header + positions + sh_attrs + density + adjacency + adjacency_offsets
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    position = scene["position"].detach().float().cpu()
+    sh_attrs = scene["sh_attrs"].detach().float().cpu()
+    density = scene["density"].detach().float().cpu().reshape(-1)
+    adjacency = scene["adjacency"]
+    offsets = scene["adjacency_offsets"]
+    if adjacency is None or offsets is None:
+        raise ValueError("Scene must include CSR adjacency for CUDA export")
+
+    adjacency = adjacency.detach().cpu().numpy().astype(np.uint32)
+    offsets = offsets.detach().cpu().numpy().astype(np.uint32)
+    n = position.shape[0]
+    adj_size = int(adjacency.shape[0])
+    sh_dim = sh_attrs.shape[1]
+    sh_degree = int(scene["sh_degree"])
+
+    header = struct.pack(
+        "<IIIIIffI",
+        VORT_MAGIC,
+        VORT_VERSION_CSR,
+        n,
+        adj_size,
+        sh_degree,
+        weight_threshold,
+        float(max_steps),
+        sh_dim,
+    )
+
+    with open(out_path, "wb") as f:
+        f.write(header)
+        f.write(position.numpy().astype(np.float32).tobytes())
+        f.write(sh_attrs.numpy().astype(np.float32).tobytes())
+        f.write(density.numpy().astype(np.float32).tobytes())
+        f.write(adjacency.tobytes())
+        f.write(offsets.tobytes())
 
     return out_path

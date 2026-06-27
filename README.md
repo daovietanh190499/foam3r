@@ -10,11 +10,13 @@ Tái hiện RadFoam Voronoi renderer: Python, CUDA (GPU NN), CUDA + CPU cKDTree.
 |---------|----------|
 | `paths.py` | Đường dẫn mặc định tới `data/` |
 | `voronoi_render/` | Python renderer + eval/benchmark CUDA |
-| `voronoi_render_cuda/` | C++/CUDA extension |
+| `voronoi/` | **CUDA tối ưu** — fused NN+trace, buffer pool (`voronoi_cuda`) |
+| `voronoi_render_cuda/` | CUDA gốc (legacy) |
 | `voronoi_render_kdtree/` | Pipeline legacy CPU cKDTree |
 | `report_latex/` | Báo cáo LaTeX (PDF build local) |
 | `REPORT_VORONOI_RENDER.md` | Báo cáo Markdown |
 | `VORONOI_RENDER_GUIDE.md` | Hướng dẫn kỹ thuật |
+| `ALGORITHMS_IO.md` | I/O Voronoi vs DUSt3R + xử lý background |
 
 ## Cấu trúc `data/` (local, không commit)
 
@@ -23,7 +25,7 @@ data/
 ├── scene.vort              # Export từ model.pt (~2 GB)
 ├── eval_python/            # Kết quả Python (metrics, PNG)
 ├── render_cuda/            # Kết quả CUDA + GPU NN
-├── render_cuda_kdtree/     # Timing/eval cKDTree
+├── render_voronoi/         # CUDA tối ưu (voronoi_cuda)
 └── report_figures/         # Figures cho LaTeX (python/, cuda/)
 ```
 
@@ -54,7 +56,14 @@ bash myresearch/voronoi_render_cuda/build.sh
 .venv/bin/python -m myresearch.eval_counter --indices 0,1,2,3,4 --stride 4
 ```
 
-**CUDA + GPU NN:**
+**CUDA tối ưu (voronoi):**
+```bash
+bash myresearch/voronoi/build.sh native
+.venv/bin/python myresearch/voronoi/eval_cuda.py
+.venv/bin/python myresearch/voronoi/benchmark_compare.py
+```
+
+**CUDA legacy:**
 ```bash
 .venv/bin/python myresearch/voronoi_render/eval_cuda.py --indices 0,1,2,3,4
 ```

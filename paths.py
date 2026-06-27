@@ -16,3 +16,5 @@ REPORT_FIGURES_PYTHON = REPORT_FIGURES / "python"
 REPORT_FIGURES_CUDA = REPORT_FIGURES / "cuda"
 
 CUDA_BUILD = MYRESEARCH / "voronoi_render_cuda" / "build"
+VORONOI_BUILD = MYRESEARCH / "voronoi_render_cuda_optimized" / "build"
+RENDER_VORONOI = DATA / "render_voronoi"

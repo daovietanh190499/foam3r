@@ -1,0 +1,30 @@
+{
+  "backend": "cuda",
+  "nn_lookup": "gpu_spatial_grid",
+  "scene": "/mnt/data/foam3r/myresearch/data/scene.vort",
+  "stride": 4,
+  "downsample": 2,
+  "views": [
+    {
+      "view": 0,
+      "psnr": 23.9432637684249
+    },
+    {
+      "view": 1,
+      "psnr": 25.905368708293828
+    },
+    {
+      "view": 2,
+      "psnr": 24.51422415929937
+    },
+    {
+      "view": 3,
+      "psnr": 25.99452954370376
+    },
+    {
+      "view": 4,
+      "psnr": 28.61128700046269
+    }
+  ],
+  "avg_psnr": 25.79373463603691
+}

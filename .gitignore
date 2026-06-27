@@ -9,8 +9,9 @@ __pycache__/
 # All experiment data and results (scene, renders, metrics, figures)
 data/
 
-# CUDA extension build (rebuild: bash voronoi_render_cuda/build.sh)
+# CUDA extension build
 voronoi_render_cuda/build/
+voronoi/build/
 
 # LaTeX build artifacts (sources in report_latex/ are tracked)
 report_latex/*.aux

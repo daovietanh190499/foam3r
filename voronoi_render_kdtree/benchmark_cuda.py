@@ -18,6 +18,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from myresearch.paths import CUDA_BUILD, RENDER_CUDA_KDTREE, SCENE_VORT
+from myresearch.voronoi_render.benchmark_cuda import build_breakdown
 from myresearch.voronoi_render.eval import composite_white_background, load_colmap_split
 from myresearch.voronoi_render.trace import SiteIndexLookup
 
@@ -148,6 +149,21 @@ def main():
             "avg_trace_per_view_s": trace_total / n_views,
         },
         "grand_total_s": load_scene_s + load_model_s + load_colmap_s + render_total,
+        "breakdown": {
+            **build_breakdown(
+                load_scene_s=load_scene_s + load_model_s,
+                load_colmap_s=load_colmap_s,
+                views=view_stats,
+                nn_key="nn_cpu_s",
+                integrated_key=None,
+            ),
+            "init_one_time": {
+                "load_scene_s": round(load_scene_s, 3),
+                "load_model_ckdtree_s": round(load_model_s, 3),
+                "load_colmap_s": round(load_colmap_s, 3),
+                "total_s": round(load_scene_s + load_model_s + load_colmap_s, 3),
+            },
+        },
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -26,6 +26,96 @@ def sync():
         torch.cuda.synchronize()
 
 
+def _pct(part: float, total: float) -> float:
+    return round(100.0 * part / total, 1) if total > 0 else 0.0
+
+
+def _avg_views(views: list[dict], keys: list[str], *, skip_first: bool = False) -> dict[str, float]:
+    subset = views[1:] if skip_first and len(views) > 1 else views
+    n = max(len(subset), 1)
+    return {k: sum(v[k] for v in subset) / n for k in keys}
+
+
+def build_breakdown(
+    *,
+    load_scene_s: float,
+    load_colmap_s: float,
+    views: list[dict],
+    nn_key: str = "nn_gpu_s",
+    trace_key: str = "cuda_trace_s",
+    post_key: str = "postprocess_s",
+    integrated_key: str | None = "trace_auto_nn_s",
+) -> dict:
+    nn_t = sum(v[nn_key] for v in views)
+    trace_t = sum(v[trace_key] for v in views)
+    post_t = sum(v[post_key] for v in views)
+    render_t = nn_t + trace_t + post_t
+
+    steady = _avg_views(views, [nn_key, trace_key, post_key], skip_first=True)
+    steady_total = steady[nn_key] + steady[trace_key] + steady[post_key]
+
+    out: dict = {
+        "init_one_time": {
+            "load_scene_s": round(load_scene_s, 3),
+            "load_colmap_s": round(load_colmap_s, 3),
+        },
+        "render_5_views_split": {
+            "nn_s": round(nn_t, 4),
+            "trace_s": round(trace_t, 4),
+            "postprocess_s": round(post_t, 4),
+            "total_s": round(render_t, 4),
+            "avg_per_view_s": round(render_t / max(len(views), 1), 4),
+            "share_pct": {
+                "nn": _pct(nn_t, render_t),
+                "trace": _pct(trace_t, render_t),
+                "postprocess": _pct(post_t, render_t),
+            },
+        },
+        "render_steady_state_avg_view_1_4": {
+            "nn_s": round(steady[nn_key], 4),
+            "trace_s": round(steady[trace_key], 4),
+            "postprocess_s": round(steady[post_key], 4),
+            "total_s": round(steady_total, 4),
+            "share_pct": {
+                "nn": _pct(steady[nn_key], steady_total),
+                "trace": _pct(steady[trace_key], steady_total),
+                "postprocess": _pct(steady[post_key], steady_total),
+            },
+        },
+    }
+
+    if integrated_key:
+        auto_t = sum(v[integrated_key] for v in views)
+        auto_post_t = auto_t + post_t
+        steady_auto = _avg_views(views, [integrated_key, post_key], skip_first=True)
+        steady_auto_total = steady_auto[integrated_key] + steady_auto[post_key]
+        out["render_5_views_integrated"] = {
+            "trace_auto_nn_s": round(auto_t, 4),
+            "postprocess_s": round(post_t, 4),
+            "total_s": round(auto_post_t, 4),
+            "avg_per_view_s": round(auto_post_t / max(len(views), 1), 4),
+            "share_pct": {
+                "trace_with_nn": _pct(auto_t, auto_post_t),
+                "postprocess": _pct(post_t, auto_post_t),
+            },
+        }
+        out["integrated_steady_state_avg_view_1_4"] = {
+            "trace_auto_nn_s": round(steady_auto[integrated_key], 4),
+            "postprocess_s": round(steady_auto[post_key], 4),
+            "total_s": round(steady_auto_total, 4),
+            "share_pct": {
+                "trace_with_nn": _pct(steady_auto[integrated_key], steady_auto_total),
+                "postprocess": _pct(steady_auto[post_key], steady_auto_total),
+            },
+        }
+
+    out["end_to_end"] = {
+        "init_s": round(load_scene_s + load_colmap_s, 3),
+        "render_only_s": round(render_t, 4),
+        "grand_total_s": round(load_scene_s + load_colmap_s + render_t, 3),
+    }
+    return out
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--scene", type=Path, default=SCENE_VORT)
@@ -156,6 +246,11 @@ def main():
             "avg_trace_auto_per_view_s": sum(v["trace_auto_nn_s"] for v in view_stats) / n_views,
         },
         "grand_total_s": load_scene_s + load_colmap_s + render_total,
+        "breakdown": build_breakdown(
+            load_scene_s=load_scene_s,
+            load_colmap_s=load_colmap_s,
+            views=view_stats,
+        ),
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
